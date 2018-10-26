@@ -1,6 +1,10 @@
 """ Translation main class """
 from __future__ import division, unicode_literals
 from __future__ import print_function
+"""
+Modified for Version 0 functionality
+Changes tagged with 'V0 Modification'
+"""
 
 import torch
 import onmt.inputters as inputters
@@ -20,15 +24,17 @@ class TranslationBuilder(object):
        n_best (int): number of translations produced
        replace_unk (bool): replace unknown words using attention
        has_tgt (bool): will the batch have gold targets
+       num_gt (int): the number of ground truth hints that will be provided during this translation session
     """
 
     def __init__(self, data, fields, n_best=1, replace_unk=False,
-                 has_tgt=False):
+                 has_tgt=False, num_gt=0):  # V0 Modification: add num_gt variable to initialization - Isaac
         self.data = data
         self.fields = fields
         self.n_best = n_best
         self.replace_unk = replace_unk
         self.has_tgt = has_tgt
+        self.num_gt = num_gt  # V0 Modification: add num_gt member var - Isaac
 
     def _build_target_tokens(self, src, src_vocab, src_raw, pred, attn):
         vocab = self.fields["tgt"].vocab
@@ -99,7 +105,7 @@ class TranslationBuilder(object):
             translation = Translation(src[:, b] if src is not None else None,
                                       src_raw, pred_sents,
                                       attn[b], pred_score[b], gold_sent,
-                                      gold_score[b])
+                                      gold_score[b], num_gt=self.num_gt)
             translations.append(translation)
 
         return translations
@@ -118,11 +124,13 @@ class Translation(object):
         attns ([`FloatTensor`]) : attention dist for each translation
         gold_sent ([str]): words from gold translation
         gold_score ([float]): log-prob of gold translation
+        num_gt (int): number of ground truth hints provided during this translation
 
     """
 
     def __init__(self, src, src_raw, pred_sents,
-                 attn, pred_scores, tgt_sent, gold_score):
+                 attn, pred_scores, tgt_sent, gold_score, num_gt=0):  # V0 Modification: add num_gt var to
+                                                                        # initialization - Isaac
         self.src = src
         self.src_raw = src_raw
         self.pred_sents = pred_sents
@@ -130,6 +138,7 @@ class Translation(object):
         self.pred_scores = pred_scores
         self.gold_sent = tgt_sent
         self.gold_score = gold_score
+        self.num_gt = num_gt  # V0 Modification: add num_gt member var - Isaac
 
     def log(self, sent_number):
         """
@@ -140,13 +149,34 @@ class Translation(object):
 
         best_pred = self.pred_sents[0]
         best_score = self.pred_scores[0]
-        pred_sent = ' '.join(best_pred)
-        output += 'PRED {}: {}\n'.format(sent_number, pred_sent)
+
+        # V0 Modification: better visualization for hints and predictions
+
+        hint = ''
+        if self.num_gt > 0:
+            assert self.gold_sent is not None
+            hint = ' '.join(self.gold_sent[:self.num_gt]) + ' '
+
+            # format to get columns for hint and completion
+            output += '\n' + ' ' * (len(str(sent_number)) + 7) + 'HINT' + ' ' * max(1, len(hint) - 4) + 'COMPLETION\n'
+
+        pred_sent = ' '.join(best_pred[self.num_gt:])
+
+        output += 'PRED {}: {}\n'.format(sent_number, hint + pred_sent)
+
+        # End Modification
+
         output += "PRED SCORE: {:.4f}\n".format(best_score)
 
         if self.gold_sent is not None:
-            tgt_sent = ' '.join(self.gold_sent)
-            output += 'GOLD {}: {}\n'.format(sent_number, tgt_sent)
+
+            # V0 Modification: better visualization for hints and predictions
+
+            tgt_sent = ' '.join(self.gold_sent[self.num_gt:])
+            output += 'GOLD {}: {}\n'.format(sent_number, hint + tgt_sent)
+
+            # End Modification
+
             output += ("GOLD SCORE: {:.4f}\n".format(self.gold_score))
         if len(self.pred_sents) > 1:
             output += '\nBEST HYP:\n'

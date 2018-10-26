@@ -1,6 +1,10 @@
 #!/usr/bin/env python
-""" Translator Class and builder """
 from __future__ import print_function
+""" Translator Class and builder """
+"""
+Modified for Version 0 functionality
+Changes tagged with 'V0 Modification'
+"""
 import argparse
 import codecs
 import os
@@ -21,6 +25,15 @@ import onmt.decoders.ensemble
 def build_translator(opt, report_score=True, logger=None, out_file=None):
     if out_file is None:
         out_file = codecs.open(opt.output, 'w+', 'utf-8')
+
+    # V0 Modification: add filewrite stream to save ground truth completions
+
+    out_gt_file = None
+    if opt.num_gt > 0:
+        out_gt_filename = '.'.join(opt.output.split('.')[:-1] + ['gt'] + [opt.output.split('.')[-1]])
+        out_gt_file = codecs.open(out_gt_filename, 'w+', 'utf-8')
+
+    # End Modification
 
     dummy_parser = argparse.ArgumentParser(description='train.py')
     opts.model_opts(dummy_parser)
@@ -45,11 +58,14 @@ def build_translator(opt, report_score=True, logger=None, out_file=None):
                         "ignore_when_blocking", "dump_beam", "report_bleu",
                         "data_type", "replace_unk", "gpu", "verbose", "fast",
                         "sample_rate", "window_size", "window_stride",
-                        "window", "image_channel_size"]}
+                        "window", "num_gt", "image_channel_size"]}  # V0 Modification: add num_gt to args - Isaac
 
-    translator = Translator(model, fields, global_scorer=scorer,
-                            out_file=out_file, report_score=report_score,
-                            copy_attn=model_opt.copy_attn, logger=logger,
+    translator = Translator(model, fields, global_scorer=scorer, out_file=out_file,
+                            out_gt_file=out_gt_file,  # V0 Modification: pass out_gt_file to constructor - Isaac
+                            out_gt_filename=out_gt_filename,  # V0 Modification: pass filename of out_gt - Isaac
+                            report_score=report_score,
+                            copy_attn=model_opt.copy_attn,
+                            logger=logger,
                             **kwargs)
     return translator
 
@@ -101,7 +117,10 @@ class Translator(object):
                  report_rouge=False,
                  verbose=False,
                  out_file=None,
+                 out_gt_file=None,  # V0 Modification: add filestream arg for writing ground truth completions - Isaac
+                 out_gt_filename=None,  # V0 Modification: add filename arg to specify ground truth to scorer - Isaac
                  fast=False,
+                 num_gt=0, # V0 Modification: add number of hints as translator arg - Isaac
                  image_channel_size=3):
         self.logger = logger
         self.gpu = gpu
@@ -128,6 +147,15 @@ class Translator(object):
         self.data_type = data_type
         self.verbose = verbose
         self.out_file = out_file
+
+        # V0 Modification: save ground truth completions to separate file, save num_gt as member var - Isaac
+
+        self.num_gt = num_gt
+        self.out_gt_file = out_gt_file
+        self.out_gt_filename = out_gt_filename
+
+        # End Modification
+
         self.report_score = report_score
         self.report_bleu = report_bleu
         self.report_rouge = report_rouge
@@ -177,7 +205,16 @@ class Translator(object):
             * all_predictions is a list of `batch_size` lists
                 of `n_best` predictions
         """
+        num_gt = self.num_gt
         assert src_data_iter is not None or src_path is not None
+
+        # V0 Modification: Check for target data - Isaac
+
+        # If we are testing performance with hints make sure we have access to ground truth translations
+        if num_gt and num_gt > 0:
+            assert tgt_data_iter is not None or tgt_path is not None
+
+        # End Modification
 
         if batch_size is None:
             raise ValueError("batch_size must be set")
@@ -208,7 +245,7 @@ class Translator(object):
 
         builder = onmt.translate.TranslationBuilder(
             data, self.fields,
-            self.n_best, self.replace_unk, tgt_path)
+            self.n_best, self.replace_unk, tgt_path, num_gt=num_gt)
 
         # Statistics
         counter = count(1)
@@ -219,7 +256,13 @@ class Translator(object):
         all_predictions = []
 
         for batch in data_iter:
-            batch_data = self.translate_batch(batch, data, fast=self.fast)
+
+            # V0 Modification: pass number of hints as arg to translate_batch - Isaac
+
+            batch_data = self.translate_batch(batch, data, fast=self.fast, num_gt=num_gt)
+
+            # End Modification
+
             translations = builder.from_batch(batch_data)
 
             for trans in translations:
@@ -230,9 +273,23 @@ class Translator(object):
                     gold_score_total += trans.gold_score
                     gold_words_total += len(trans.gold_sent) + 1
 
-                n_best_preds = [" ".join(pred)
+                # V0 Modification: only write completion to out file - Isaac
+
+                n_best_preds = [" ".join(pred[num_gt:])
                                 for pred in trans.pred_sents[:self.n_best]]
+
+                # End Modification
+
                 all_predictions += [n_best_preds]
+
+                # V0 Modification: write ground truth completions to the specified, separate out file
+
+                if num_gt > 0:
+                    self.out_gt_file.write(' '.join(trans.gold_sent[num_gt:]) + '\n')
+                    self.out_gt_file.flush()
+
+                # End Modification
+
                 self.out_file.write('\n'.join(n_best_preds) + '\n')
                 self.out_file.flush()
 
@@ -281,13 +338,25 @@ class Translator(object):
                 else:
                     print(msg)
                 if self.report_bleu:
-                    msg = self._report_bleu(tgt_path)
+
+                    # V0 Modification: provide ground truth completions path to scorer - Isaac
+
+                    msg = self._report_bleu(tgt_path if num_gt == 0 else self.out_gt_filename)
+
+                    # End Modification
+
                     if self.logger:
                         self.logger.info(msg)
                     else:
                         print(msg)
                 if self.report_rouge:
-                    msg = self._report_rouge(tgt_path)
+
+                    # V0 Modification: provide ground truth completions path to scorer - Isaac
+
+                    msg = self._report_rouge(tgt_path if num_gt == 0 else self.out_gt_filename)
+
+                    # End Modification
+
                     if self.logger:
                         self.logger.info(msg)
                     else:
@@ -299,7 +368,7 @@ class Translator(object):
                       codecs.open(self.dump_beam, 'w', 'utf-8'))
         return all_scores, all_predictions
 
-    def translate_batch(self, batch, data, fast=False):
+    def translate_batch(self, batch, data, fast=False, num_gt=0): # V0 Modification: add num_gt argument - Isaac
         """
         Translate a batch of sentences.
 
@@ -309,6 +378,7 @@ class Translator(object):
            batch (:obj:`Batch`): a batch from a dataset object
            data (:obj:`Dataset`): the dataset object
            fast (bool): enables fast beam search (may not support all features)
+           num_gt (int): the number of ground truth hints to provide during translation
 
         Todo:
            Shouldn't need the original dataset.
@@ -323,7 +393,7 @@ class Translator(object):
                     n_best=self.n_best,
                     return_attention=self.replace_unk)
             else:
-                return self._translate_batch(batch, data)
+                return self._translate_batch(batch, data, num_gt=num_gt) # V0 Modification: add num_gt argument - Isaac
 
     def _fast_translate_batch(self,
                               batch,
@@ -506,7 +576,7 @@ class Translator(object):
 
         return results
 
-    def _translate_batch(self, batch, data):
+    def _translate_batch(self, batch, data, num_gt=0): # V0 Modification: add num_gt argument - Isaac
         # (0) Prep each of the components of the search.
         # And helper method for reducing verbosity.
         beam_size = self.beam_size
@@ -544,6 +614,16 @@ class Translator(object):
         def unbottle(m):
             return m.view(beam_size, batch_size, -1)
 
+        # V0 Modification - Isaac
+
+        # Prepare ground truth and concatenate start symbol to beginning
+        if num_gt > 0:
+            ground_truth = inputters.make_features(batch, 'tgt', 'text')[:num_gt, :, 0] # [num_gt X batch]
+            start_symbols = var(vocab.stoi[inputters.BOS_WORD]).repeat(1, batch_size)
+            ground_truth = torch.cat([start_symbols, ground_truth], dim=0)
+
+        # End Modification
+
         # (1) Run the encoder on the src.
         src = inputters.make_features(batch, 'src', data_type)
         src_lengths = None
@@ -578,9 +658,18 @@ class Translator(object):
             if all((b.done() for b in beam)):
                 break
 
-            # Construct batch x beam_size nxt words.
-            # Get all the pending current beam words and arrange for forward.
-            inp = var(torch.stack([b.get_current_state() for b in beam])
+            # V0 Modification: set previous ground truth as input to each step - Isaac
+
+            if num_gt > 0 and i < ground_truth.size(0):
+                # fill inp with ground truth words
+                inp = rvar(ground_truth[i].unsqueeze(1)).view(1, -1)
+
+            # End Modification
+
+            else:
+                # Construct batch x beam_size nxt words.
+                # Get all the pending current beam words and arrange for forward.
+                inp = var(torch.stack([b.get_current_state() for b in beam])
                       .t().contiguous().view(1, -1))
 
             # Turn any copied words to UNKs
@@ -621,10 +710,24 @@ class Translator(object):
                 out = out.log()
                 beam_attn = unbottle(attn["copy"])
 
+            # V0 Modification - Isaac
+
+            # output is log-probs over vocab, so set ground truth index to 0, all others to be very negative
+            def one_hot_log(idxs, cuda):
+                if cuda:
+                    return torch.cuda.FloatTensor([[0.0 if x == idx else float("-inf") for x in range(len(vocab))]]).repeat(beam_size, 1, 1)
+                return torch.FloatTensor([[0.0 if x == idx else float("-inf") for x in range(len(vocab))] for idx in idxs]).repeat(beam_size, 1, 1)
+
+            if i < num_gt:
+                out = one_hot_log(ground_truth[i+1], torch.cuda.is_available())
+
+            # End Modification
+
             # (c) Advance each beam.
             for j, b in enumerate(beam):
                 b.advance(out[:, j],
-                          beam_attn.data[:, j, :memory_lengths[j]])
+                          beam_attn.data[:, j, :memory_lengths[j]],
+                          i < num_gt)  # V0 Modification: pass parameter specifying whether output is ground truth - Isaac
                 dec_states.beam_update(j, b.get_current_origin(), beam_size)
 
         # (4) Extract sentences from beam.

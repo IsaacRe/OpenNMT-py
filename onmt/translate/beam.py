@@ -1,4 +1,8 @@
 from __future__ import division
+"""
+Modified for Version 0 functionality
+Changes tagged with 'V0 Modification'
+"""
 import torch
 from onmt.translate import penalties
 
@@ -71,7 +75,8 @@ class Beam(object):
         "Get the backpointers for the current timestep."
         return self.prev_ks[-1]
 
-    def advance(self, word_probs, attn_out):
+    def advance(self, word_probs, attn_out, ground_truth=False):  # V0 Modification: pass whether word_probs is
+                                                                    # ground truth - Isaac
         """
         Given prob over words for every last beam `wordLk` and attention
         `attn_out`: Compute and update the beam search.
@@ -88,7 +93,8 @@ class Beam(object):
             self.global_scorer.update_score(self, attn_out)
         # force the output to be longer than self.min_length
         cur_len = len(self.next_ys)
-        if cur_len < self.min_length:
+        if cur_len < self.min_length and not ground_truth:  # V0 Modification: if word_probs is ground truth
+                                                            # don't enforce length - Isaac
             for k in range(len(word_probs)):
                 word_probs[k][self._eos] = -1e20
         # Sum the previous scores.

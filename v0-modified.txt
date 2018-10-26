@@ -1,0 +1,6 @@
+"""List of files modified for version 0 implementation""""
+onmt/opts.py
+onmt/translate/translation.py
+onmt/translate/translator.py
+onmt/translate/beam.py
+translate.py

@@ -8,7 +8,6 @@ import onmt.models.stacked_rnn
 from onmt.utils.misc import aeq
 from onmt.utils.rnn_factory import rnn_factory
 
-
 class RNNDecoderBase(nn.Module):
     """
     Base recurrent attention-based decoder class.
@@ -60,7 +59,7 @@ class RNNDecoderBase(nn.Module):
                  hidden_size, attn_type="general", attn_func="softmax",
                  coverage_attn=False, context_gate=None,
                  copy_attn=False, dropout=0.0, embeddings=None,
-                 reuse_copy_attn=False):
+                 reuse_copy_attn=False, c_step=0.0):
         super(RNNDecoderBase, self).__init__()
 
         # Basic attributes.

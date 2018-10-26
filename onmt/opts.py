@@ -1,5 +1,9 @@
-""" Implementation of all available options """
 from __future__ import print_function
+""" Implementation of all available options """
+"""
+Modified for Version 0 functionality
+Changes tagged with 'V0 Modification'
+"""
 
 import argparse
 from onmt.models.sru import CheckSRU
@@ -492,6 +496,15 @@ def translate_opts(parser):
                        help='Maximum prediction length.')
     group.add_argument('-max_sent_length', action=DeprecateAction,
                        help="Deprecated, use `-max_length` instead")
+
+
+    # V0 Modification: add number of ground truth hints as a translation argument - Isaac
+
+    # Ground truth hinting
+    group.add_argument('-num_gt', type=int, default=0,
+                       help="Number of ground truth hints to provide during translation")
+
+    # End Modification
 
     # Alpha and Beta values for Google Length + Coverage penalty
     # Described here: https://arxiv.org/pdf/1609.08144.pdf, Section 7

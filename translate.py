@@ -1,8 +1,13 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
 from __future__ import division, unicode_literals
+"""
+Modified for Version 0 functionality
+Changes tagged with 'V0 Modification'
+"""
+
 import argparse
+import traceback, sys, pdb
 
 from onmt.utils.logging import init_logger
 from onmt.translate.translator import build_translator
@@ -33,4 +38,10 @@ if __name__ == "__main__":
 
     opt = parser.parse_args()
     logger = init_logger(opt.log_file)
-    main(opt)
+    try:
+        main(opt)
+    except:
+        _, _, tb = sys.exc_info()
+        traceback.print_exc()
+        pdb.post_mortem(tb)
+
