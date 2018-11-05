@@ -1,4 +1,9 @@
-""" Base Class and function for Decoders """
+"""
+Base Class and function for Decoders
+
+Modified for Version 1 functionality
+Changes tagged with 'V1 Modification'
+"""
 
 from __future__ import division
 import torch
@@ -59,7 +64,7 @@ class RNNDecoderBase(nn.Module):
                  hidden_size, attn_type="general", attn_func="softmax",
                  coverage_attn=False, context_gate=None,
                  copy_attn=False, dropout=0.0, embeddings=None,
-                 reuse_copy_attn=False, c_step=0.0):
+                 reuse_copy_attn=False):
         super(RNNDecoderBase, self).__init__()
 
         # Basic attributes.
@@ -155,6 +160,13 @@ class RNNDecoderBase(nn.Module):
 
         return decoder_outputs, state, attns
 
+    # V1 Modification: add fast_forward method to be implemented by subclasses
+
+    def fast_forward(self, *args, **kwargs):
+        return self._fast_forward(*args, **kwargs)
+
+    # End Modification
+
     def init_decoder_state(self, src, memory_bank, encoder_final,
                            with_cache=False):
         """ Init decoder state with last state of the encoder """
@@ -191,7 +203,14 @@ class StdRNNDecoder(RNNDecoderBase):
     or `copy_attn` support.
     """
 
-    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None):
+    # V1 Modification: subclass implementation of fast_forward. Not implemented for StdRNNDecoder
+
+    def _fast_forward(self, *args, **kwargs):
+        raise NotImplementedError
+
+    # End Modification
+
+    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None, knowledge_sink=None):
         """
         Private helper for running the specific RNN forward pass.
         Must be overriden by all subclasses.
@@ -213,6 +232,13 @@ class StdRNNDecoder(RNNDecoderBase):
         """
         assert not self._copy  # TODO, no support yet.
         assert not self._coverage  # TODO, no support yet.
+
+        # V1 Modification: update for StdRNNDecoder not yet implemented
+
+        if knowledge_sink:
+            raise NotImplementedError
+
+        # End Modification
 
         # Initialize local and return variables.
         attns = {}
@@ -291,7 +317,47 @@ class InputFeedRNNDecoder(RNNDecoderBase):
           G --> H
     """
 
-    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None):
+    # V1 Modification: subclass implementation of fast_forward. Currently only works for current-step updates
+
+    def _fast_forward(self, rnn_output, hidden, memory_bank, memory_lengths, decoder_input, decoder_outputs,
+                      attns, coverage):
+        decoder_output, p_attn = self.attn(
+            rnn_output,
+            memory_bank.transpose(0, 1),
+            memory_lengths=memory_lengths)
+        if self.context_gate is not None:
+            # TODO: context gate should be employed
+            # instead of second RNN transform.
+            decoder_output = self.context_gate(
+                decoder_input, rnn_output, decoder_output
+            )
+        decoder_output = self.dropout(decoder_output)
+        # TODO: extend update functionality to any previous step
+        # input_feed = decoder_output
+
+        decoder_outputs += [decoder_output]
+        attns["std"] += [p_attn]
+
+        # Update the coverage attention.
+        if self._coverage:
+            coverage = coverage + p_attn \
+                if coverage is not None else p_attn
+            attns["coverage"] += [coverage]
+
+        # Run the forward pass of the copy attention layer.
+        if self._copy and not self._reuse_copy_attn:
+            _, copy_attn = self.copy_attn(decoder_output,
+                                          memory_bank.transpose(0, 1))
+            attns["copy"] += [copy_attn]
+        elif self._copy:
+            attns["copy"] = attns["std"]
+
+        return hidden, decoder_outputs, attns
+
+    # End Modification
+
+    def _run_forward_pass(self, tgt, memory_bank, state, memory_lengths=None,
+                          knowledge_sink=None):  # V1 Modification: pass knowledge sink object during forward pass
         """
         See StdRNNDecoder._run_forward_pass() for description
         of arguments and return values.
@@ -324,7 +390,19 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             emb_t = emb_t.squeeze(0)
             decoder_input = torch.cat([emb_t, input_feed], 1)
 
-            rnn_output, hidden = self.rnn(decoder_input, hidden)
+            # V1 Modification: knowledge injection entry point, save vars
+
+            if knowledge_sink:
+                knowledge_sink.save_vars(memory_bank=memory_bank,
+                                         memory_lengths=memory_lengths,
+                                         decoder_input=decoder_input,
+                                         decoder_outputs=decoder_outputs,
+                                         attns=attns,
+                                         coverage=coverage)
+            rnn_output, hidden = self.rnn(decoder_input, hidden, knowledge_sink=knowledge_sink)
+
+            # End Modification
+
             decoder_output, p_attn = self.attn(
                 rnn_output,
                 memory_bank.transpose(0, 1),

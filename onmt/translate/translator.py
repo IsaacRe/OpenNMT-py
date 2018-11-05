@@ -1,9 +1,13 @@
 #!/usr/bin/env python
 from __future__ import print_function
-""" Translator Class and builder """
 """
+Translator Class and builder
+
 Modified for Version 0 functionality
 Changes tagged with 'V0 Modification'
+
+Modified for Version 1 functionality
+Changes tagged with 'V1 Modification'
 """
 import argparse
 import codecs
@@ -22,16 +26,22 @@ import onmt.opts as opts
 import onmt.decoders.ensemble
 
 
-def build_translator(opt, report_score=True, logger=None, out_file=None):
+# V1 Modification: pass knowledge_sink object to translator contruction
+def build_translator(opt, report_score=True, logger=None, out_file=None, knowledge_sink=None):
     if out_file is None:
         out_file = codecs.open(opt.output, 'w+', 'utf-8')
 
     # V0 Modification: add filewrite stream to save ground truth completions
 
     out_gt_file = None
+    out_gt_filename = None
+    out_hint_file = None
+    out_hint_filename = None
     if opt.num_gt > 0:
         out_gt_filename = '.'.join(opt.output.split('.')[:-1] + ['gt'] + [opt.output.split('.')[-1]])
         out_gt_file = codecs.open(out_gt_filename, 'w+', 'utf-8')
+        out_hint_filename = '.'.join(opt.output.split('.')[:-1] + ['hint'] + [opt.output.split('.')[-1]])
+        out_hint_file = codecs.open(out_hint_filename, 'w+', 'utf-8')
 
     # End Modification
 
@@ -61,12 +71,28 @@ def build_translator(opt, report_score=True, logger=None, out_file=None):
                         "window", "num_gt", "image_channel_size"]}  # V0 Modification: add num_gt to args - Isaac
 
     translator = Translator(model, fields, global_scorer=scorer, out_file=out_file,
-                            out_gt_file=out_gt_file,  # V0 Modification: pass out_gt_file to constructor - Isaac
-                            out_gt_filename=out_gt_filename,  # V0 Modification: pass filename of out_gt - Isaac
+
+                            # V0 Modification: pass added constructor args - Isaac
+
+                            out_gt_file=out_gt_file,
+                            out_gt_filename=out_gt_filename,
+                            out_hint_file=out_hint_file,
+                            out_hint_filename=out_hint_filename,
+
+                            # End Modification
+
                             report_score=report_score,
                             copy_attn=model_opt.copy_attn,
                             logger=logger,
                             **kwargs)
+
+    # V1 Modification: attach knowledge_sink to translator
+
+    if knowledge_sink:
+        translator.knowledge_sink = knowledge_sink
+
+    # End Modification
+
     return translator
 
 
@@ -117,10 +143,18 @@ class Translator(object):
                  report_rouge=False,
                  verbose=False,
                  out_file=None,
-                 out_gt_file=None,  # V0 Modification: add filestream arg for writing ground truth completions - Isaac
-                 out_gt_filename=None,  # V0 Modification: add filename arg to specify ground truth to scorer - Isaac
+
+                 # V0 Modification: added constructor args - Isaac
+
+                 out_gt_file=None,
+                 out_gt_filename=None,
+                 out_hint_file=None,
+                 out_hint_filename=None,
+
+                 # End Modification
+
                  fast=False,
-                 num_gt=0, # V0 Modification: add number of hints as translator arg - Isaac
+                 num_gt=0,  # V0 Modification: add number of hints as translator arg - Isaac
                  image_channel_size=3):
         self.logger = logger
         self.gpu = gpu
@@ -153,6 +187,8 @@ class Translator(object):
         self.num_gt = num_gt
         self.out_gt_file = out_gt_file
         self.out_gt_filename = out_gt_filename
+        self.out_hint_file = out_hint_file
+        self.out_hint_filename = out_hint_filename
 
         # End Modification
 
@@ -179,6 +215,7 @@ class Translator(object):
                   tgt_data_iter=None,
                   src_dir=None,
                   batch_size=None,
+                  vanilla=None,  # V0 Modification: add boolean arg to allow sampling of completion comparisons - Isaac
                   attn_debug=False):
         """
         Translate content of `src_data_iter` (if not None) or `src_path`
@@ -196,6 +233,9 @@ class Translator(object):
             src_dir (str): source directory path
                 (used for Audio and Image datasets)
             batch_size (int): size of examples per mini-batch
+            vanilla (bool): whether to ignore ground truth and follow vanilla sampling to get a baseline for
+                            completions sampled with ground truth hints. If True, will additionally skip writing
+                            of ground truth completions to separate output file
             attn_debug (bool): enables the attention logging
 
         Returns:
@@ -205,13 +245,14 @@ class Translator(object):
             * all_predictions is a list of `batch_size` lists
                 of `n_best` predictions
         """
-        num_gt = self.num_gt
         assert src_data_iter is not None or src_path is not None
 
         # V0 Modification: Check for target data - Isaac
 
+        num_gt = self.num_gt
+
         # If we are testing performance with hints make sure we have access to ground truth translations
-        if num_gt and num_gt > 0:
+        if num_gt and num_gt > 0 and not vanilla:
             assert tgt_data_iter is not None or tgt_path is not None
 
         # End Modification
@@ -257,9 +298,10 @@ class Translator(object):
 
         for batch in data_iter:
 
-            # V0 Modification: pass number of hints as arg to translate_batch - Isaac
+            # V0 Modification: pass number of hints to translate_batch - Isaac
 
-            batch_data = self.translate_batch(batch, data, fast=self.fast, num_gt=num_gt)
+            # set num_gt to 0 to specify translation without hint if vanilla is true
+            batch_data = self.translate_batch(batch, data, fast=self.fast, num_gt=0 if vanilla else num_gt)
 
             # End Modification
 
@@ -284,14 +326,15 @@ class Translator(object):
 
                 # V0 Modification: write ground truth completions to the specified, separate out file
 
-                if num_gt > 0:
+                # only write to ground truth file when following hint sampling (avoid redundancy)
+                if num_gt > 0 and not vanilla:
                     self.out_gt_file.write(' '.join(trans.gold_sent[num_gt:]) + '\n')
                     self.out_gt_file.flush()
-
-                # End Modification
-
-                self.out_file.write('\n'.join(n_best_preds) + '\n')
-                self.out_file.flush()
+                    self.out_hint_file.write('\n'.join(n_best_preds) + '\n')
+                    self.out_hint_file.flush()
+                else:
+                    self.out_file.write('\n'.join(n_best_preds) + '\n')
+                    self.out_file.flush()
 
                 if self.verbose:
                     sent_number = next(counter)
@@ -341,7 +384,8 @@ class Translator(object):
 
                     # V0 Modification: provide ground truth completions path to scorer - Isaac
 
-                    msg = self._report_bleu(tgt_path if num_gt == 0 else self.out_gt_filename)
+                    msg = self._report_bleu(tgt_path if num_gt == 0 else self.out_gt_filename,
+                                            self.out_file if vanilla else self.out_hint_file)
 
                     # End Modification
 
@@ -353,7 +397,8 @@ class Translator(object):
 
                     # V0 Modification: provide ground truth completions path to scorer - Isaac
 
-                    msg = self._report_rouge(tgt_path if num_gt == 0 else self.out_gt_filename)
+                    msg = self._report_rouge(tgt_path if num_gt == 0 else self.out_gt_filename,
+                                             self.out_file if vanilla else self.out_hint_file)
 
                     # End Modification
 
@@ -368,7 +413,7 @@ class Translator(object):
                       codecs.open(self.dump_beam, 'w', 'utf-8'))
         return all_scores, all_predictions
 
-    def translate_batch(self, batch, data, fast=False, num_gt=0): # V0 Modification: add num_gt argument - Isaac
+    def translate_batch(self, batch, data, fast=False, num_gt=0):  # V0 Modification: add args - Isaac
         """
         Translate a batch of sentences.
 
@@ -393,7 +438,36 @@ class Translator(object):
                     n_best=self.n_best,
                     return_attention=self.replace_unk)
             else:
-                return self._translate_batch(batch, data, num_gt=num_gt) # V0 Modification: add num_gt argument - Isaac
+                return self._translate_batch(batch, data, num_gt=num_gt)  # V0 Modification: add args - Isaac
+
+    # V1 Modification: fast_forward function to get logits deeper method returns to compute loss
+
+    def fast_forward(self, dec_out, dec_states, attn, unbottle, data, src_map, batch):
+        dec_out = dec_out.squeeze(0)
+
+        # dec_out: beam x rnn_size
+
+        # (b) Compute a vector of batch x beam word scores.
+        if not self.copy_attn:
+            out = self.model.generator.forward(dec_out).data
+            out = unbottle(out)
+            # beam x tgt_vocab
+            beam_attn = unbottle(attn["std"])
+        else:
+            out = self.model.generator.forward(dec_out,
+                                               attn["copy"].squeeze(0),
+                                               src_map)
+            # beam x (tgt_vocab + extra_vocab)
+            out = data.collapse_copy_scores(
+                unbottle(out.data),
+                batch, self.fields["tgt"].vocab, data.src_vocabs)
+            # beam x tgt_vocab
+            out = out.log()
+            beam_attn = unbottle(attn["copy"])
+
+        return dec_out, dec_states, attn, out, beam_attn
+
+    # End Modification
 
     def _fast_translate_batch(self,
                               batch,
@@ -682,11 +756,24 @@ class Translator(object):
             # in the decoder
             inp = inp.unsqueeze(2)
 
+            # V1 Modification: save variables for call to fast_forward - Isaac
+
+            self.knowledge_sink.save_vars(dec_out=dec_out,
+                                          dec_states=dec_states,
+                                          attn=attn,
+                                          unbottle=unbottle,
+                                          data=data,
+                                          src_map=src_map,
+                                          batch=batch)
+
+            # End Modification
+
             # Run one step.
             dec_out, dec_states, attn = self.model.decoder(
                 inp, memory_bank, dec_states,
                 memory_lengths=memory_lengths,
-                step=i)
+                step=i,
+                knowledge_sink=self.knowledge_sink)  # V1 Modification: pass knowledge sink to decoder
 
             dec_out = dec_out.squeeze(0)
 
@@ -709,6 +796,13 @@ class Translator(object):
                 # beam x tgt_vocab
                 out = out.log()
                 beam_attn = unbottle(attn["copy"])
+
+            # V1 Modification: conduct knowledge injection - Isaac
+
+            # TODO
+            # dec_out, dec_states, attn, out, beam_attn = self.knowledge_sink.
+
+            # End Modification
 
             # V0 Modification - Isaac
 
@@ -799,7 +893,14 @@ class Translator(object):
                 name, math.exp(-score_total / words_total)))
         return msg
 
-    def _report_bleu(self, tgt_path):
+    # V0 Modification: app optional arg specifying predictions stream reader - Isaac
+
+    def _report_bleu(self, tgt_path, hyp_stream=None):
+        if not hyp_stream:
+            hyp_stream = self.out_file
+
+    # End Modification
+
         import subprocess
         base_dir = os.path.abspath(__file__ + "/../../..")
         # Rollback pointer to the beginning.
@@ -808,19 +909,26 @@ class Translator(object):
 
         res = subprocess.check_output("perl %s/tools/multi-bleu.perl %s"
                                       % (base_dir, tgt_path),
-                                      stdin=self.out_file,
+                                      stdin=hyp_stream,  # V0 Modification: set stdin=hyp_stream - Isaac
                                       shell=True).decode("utf-8")
 
         msg = ">> " + res.strip()
         return msg
 
-    def _report_rouge(self, tgt_path):
+    # V0 Modification: app optional arg specifying predictions stream reader - Isaac
+
+    def _report_rouge(self, tgt_path, hyp_stream=None):
+        if not hyp_stream:
+            hyp_stream = self.out_file
+
+    # End Modification
+
         import subprocess
         path = os.path.split(os.path.realpath(__file__))[0]
         res = subprocess.check_output(
             "python %s/tools/test_rouge.py -r %s -c STDIN"
             % (path, tgt_path),
             shell=True,
-            stdin=self.out_file).decode("utf-8")
+            stdin=hyp_stream).decode("utf-8")  # V0 Modification: set stdin=hyp_stream - Isaac
         msg = res.strip()
         return msg
