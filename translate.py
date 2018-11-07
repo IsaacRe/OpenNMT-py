@@ -28,15 +28,16 @@ def main(opt):
                          batch_size=opt.batch_size,
                          attn_debug=opt.attn_debug)
 
-    # V0 Modification: translate a second time to get comparison completion when no hint is provided - Isaac
+    # V0 Modification: translate a second time to get baseline completion for comparison - Isaac
 
     if opt.num_gt > 0:
+
         translator.translate(src_path=opt.src,
                              tgt_path=opt.tgt,
                              src_dir=opt.src_dir,
                              batch_size=opt.batch_size,
                              attn_debug=opt.attn_debug,
-                             vanilla=True)  # specify vanilla sampling procedure (no hint)
+                             baseline=True)  # specify baseline sampling procedure (no hint)
 
     # End Modification
 
@@ -50,10 +51,12 @@ if __name__ == "__main__":
 
     opt = parser.parse_args()
     logger = init_logger(opt.log_file)
+    """
     try:
         main(opt)
     except:
         _, _, tb = sys.exc_info()
         traceback.print_exc()
         pdb.post_mortem(tb)
-
+    """
+    main(opt)

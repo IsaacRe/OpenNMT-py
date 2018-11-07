@@ -107,8 +107,7 @@ class RNNDecoderBase(nn.Module):
             self._copy = True
         self._reuse_copy_attn = reuse_copy_attn
 
-    def forward(self, tgt, memory_bank, state, memory_lengths=None,
-                step=None):
+    def forward(self, tgt, memory_bank, state, memory_lengths=None, step=None, knowledge_sink=None):
         """
         Args:
             tgt (`LongTensor`): sequences of padded tokens
@@ -119,6 +118,8 @@ class RNNDecoderBase(nn.Module):
                  decoder state object to initialize the decoder
             memory_lengths (`LongTensor`): the padded source lengths
                 `[batch]`.
+            knowledge_sink (:obj:`onmt.utils.knowledge_sink.StateUpdater`): the knowledge sink handling cell state
+                updates
         Returns:
             (`FloatTensor`,:obj:`onmt.Models.DecoderState`,`FloatTensor`):
                 * decoder_outputs: output from the decoder (after attn)
@@ -135,9 +136,17 @@ class RNNDecoderBase(nn.Module):
         aeq(tgt_batch, memory_batch)
         # END
 
+        # V1 Modification: save vars - Isaac
+
+        if knowledge_sink:
+            knowledge_sink.save_vars(self,
+                                     state=state)
+
+        # End Modification
+
         # Run the forward pass of the RNN.
         decoder_final, decoder_outputs, attns = self._run_forward_pass(
-            tgt, memory_bank, state, memory_lengths=memory_lengths)
+            tgt, memory_bank, state, memory_lengths=memory_lengths, knowledge_sink=knowledge_sink)
 
         # Update the state with the result.
         final_output = decoder_outputs[-1]
@@ -163,7 +172,33 @@ class RNNDecoderBase(nn.Module):
     # V1 Modification: add fast_forward method to be implemented by subclasses
 
     def fast_forward(self, *args, **kwargs):
-        return self._fast_forward(*args, **kwargs)
+        # handle saved var for for outer fast_forward method, pass remaining saved vars to inner method
+        assert 'state' in kwargs
+        state = kwargs['state']
+        del kwargs['state']
+
+        decoder_final, decoder_outputs, attns = self._fast_forward(*args, **kwargs)
+
+        # Update the state with the result.
+        final_output = decoder_outputs[-1]
+        coverage = None
+        if "coverage" in attns:
+            coverage = attns["coverage"][-1].unsqueeze(0)
+        state.update_state(decoder_final, final_output.unsqueeze(0), coverage)
+
+        # Concatenates sequence of tensors along a new dimension.
+        # NOTE: v0.3 to 0.4: decoder_outputs / attns[*] may not be list
+        #       (in particular in case of SRU) it was not raising error in 0.3
+        #       since stack(Variable) was allowed.
+        #       In 0.4, SRU returns a tensor that shouldn't be stacke
+        if type(decoder_outputs) == list:
+            decoder_outputs = torch.stack(decoder_outputs)
+
+            for k in attns:
+                if type(attns[k]) == list:
+                    attns[k] = torch.stack(attns[k])
+
+        return decoder_outputs, state, attns
 
     # End Modification
 
@@ -393,7 +428,8 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             # V1 Modification: knowledge injection entry point, save vars
 
             if knowledge_sink:
-                knowledge_sink.save_vars(memory_bank=memory_bank,
+                knowledge_sink.save_vars(self,
+                                         memory_bank=memory_bank,
                                          memory_lengths=memory_lengths,
                                          decoder_input=decoder_input,
                                          decoder_outputs=decoder_outputs,
@@ -440,7 +476,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         assert not rnn_type == "SRU", "SRU doesn't support input feed! " \
             "Please set -input_feed 0!"
         if rnn_type == "LSTM":
-            stacked_cell = onmt.models.stacked_rnn.StackedLSTM
+            stacked_cell = onmt.models.stacked_rnn.HijackableLSTM  # V1 Modification: use lstm cell with hijacking
         else:
             stacked_cell = onmt.models.stacked_rnn.StackedGRU
         return stacked_cell(num_layers, input_size,

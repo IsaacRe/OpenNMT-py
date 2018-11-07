@@ -15,6 +15,7 @@ class HijackableLSTMCell(nn.Module):
         2 - computing new hidden state output from inputs, previous hiddens and the updated cell state
     """
     def __init__(self, input_size, state_size):
+        super(HijackableLSTMCell, self).__init__()
         self.input_size = input_size
         self.state_size = state_size
         # Weights have shape [number of gates * state size X input size + state size]

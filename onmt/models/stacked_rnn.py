@@ -6,9 +6,9 @@ Changes tagged with 'V1 Modification'
 """
 import torch
 import torch.nn as nn
-from custom_rnn_cells import HijackableLSTMCell  # V1 Modification use HijcakableLSTMCell implementation as backend
+from onmt.models.custom_rnn_cells import HijackableLSTMCell  # V1 Modification use HijcakableLSTMCell implementation as backend
 
-#TODO
+
 class HijackableLSTM(nn.Module):
     """
     Stacked LSTM same as below, but modified for compatibility with test-time knowledge injection
@@ -60,7 +60,8 @@ class HijackableLSTM(nn.Module):
                 c_1_i, output_gate = layer.compute_c(input_feed, (h_0[i], c_0[i]))
 
                 # save vars for fast_forward
-                knowledge_sink.save_vars(output_gate=output_gate,
+                knowledge_sink.save_vars(self,
+                                         output_gate=output_gate,
                                          start_layer=i,
                                          hidden_0=hidden,
                                          hidden_1=(h_1, c_1))

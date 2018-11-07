@@ -497,12 +497,17 @@ def translate_opts(parser):
     group.add_argument('-max_sent_length', action=DeprecateAction,
                        help="Deprecated, use `-max_length` instead")
 
-
     # V0 Modification: add number of ground truth hints as a translation argument - Isaac
 
     # Ground truth hinting
     group.add_argument('-num_gt', type=int, default=0,
                        help="Number of ground truth hints to provide during translation")
+
+    # End Modification
+
+    # V1 Modification: add update step size at translation argument
+    group.add_argument('-update_size', type=float, default=0.0,
+                       help="Size of the update step")
 
     # End Modification
 

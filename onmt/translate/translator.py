@@ -24,6 +24,7 @@ import onmt.translate.beam
 import onmt.inputters as inputters
 import onmt.opts as opts
 import onmt.decoders.ensemble
+from onmt.utils.knowledge_sink import StateUpdater  # V1 Modification import StateUpdater
 
 
 # V1 Modification: pass knowledge_sink object to translator contruction
@@ -31,17 +32,28 @@ def build_translator(opt, report_score=True, logger=None, out_file=None, knowled
     if out_file is None:
         out_file = codecs.open(opt.output, 'w+', 'utf-8')
 
-    # V0 Modification: add filewrite stream to save ground truth completions
+    # V0 Modification: add filewrite stream to save ground truth completions - Isaac
 
     out_gt_file = None
     out_gt_filename = None
     out_hint_file = None
     out_hint_filename = None
+
+    # V1 Modification: add filewrite stream to save update completions - Isaac
+
+    out_update_file = None
+    out_update_filename = None
     if opt.num_gt > 0:
         out_gt_filename = '.'.join(opt.output.split('.')[:-1] + ['gt'] + [opt.output.split('.')[-1]])
         out_gt_file = codecs.open(out_gt_filename, 'w+', 'utf-8')
-        out_hint_filename = '.'.join(opt.output.split('.')[:-1] + ['hint'] + [opt.output.split('.')[-1]])
-        out_hint_file = codecs.open(out_hint_filename, 'w+', 'utf-8')
+        if opt.update_size > 0:
+            out_update_filename = '.'.join(opt.output.split('.')[:-1] + ['update'] + [opt.output.split('.')[-1]])
+            out_update_file = codecs.open(out_update_filename, 'w+', 'utf-8')
+        else:
+            out_hint_filename = '.'.join(opt.output.split('.')[:-1] + ['hint'] + [opt.output.split('.')[-1]])
+            out_hint_file = codecs.open(out_hint_filename, 'w+', 'utf-8')
+
+    # End Modification
 
     # End Modification
 
@@ -81,6 +93,13 @@ def build_translator(opt, report_score=True, logger=None, out_file=None, knowled
 
                             # End Modification
 
+                            # V1 Modification - Isaac
+
+                            out_update_file=out_update_file,
+                            out_update_filename=out_update_filename,
+
+                            # End Modification
+
                             report_score=report_score,
                             copy_attn=model_opt.copy_attn,
                             logger=logger,
@@ -88,8 +107,8 @@ def build_translator(opt, report_score=True, logger=None, out_file=None, knowled
 
     # V1 Modification: attach knowledge_sink to translator
 
-    if knowledge_sink:
-        translator.knowledge_sink = knowledge_sink
+    if opt.update_size > 0 and opt.num_gt > 0:
+        translator.knowledge_sink = StateUpdater(opt.update_size)
 
     # End Modification
 
@@ -153,6 +172,13 @@ class Translator(object):
 
                  # End Modification
 
+                 # V1 Modification - Isaac
+
+                 out_update_file=None,
+                 out_update_filename=None,
+
+                 # End Modification
+
                  fast=False,
                  num_gt=0,  # V0 Modification: add number of hints as translator arg - Isaac
                  image_channel_size=3):
@@ -192,6 +218,14 @@ class Translator(object):
 
         # End Modification
 
+        # V1 Modification - Isaac
+
+        self.knowledge_sink = None
+        self.out_update_file = out_update_file
+        self.out_update_filename = out_update_filename
+
+        # End Modification
+
         self.report_score = report_score
         self.report_bleu = report_bleu
         self.report_rouge = report_rouge
@@ -215,7 +249,7 @@ class Translator(object):
                   tgt_data_iter=None,
                   src_dir=None,
                   batch_size=None,
-                  vanilla=None,  # V0 Modification: add boolean arg to allow sampling of completion comparisons - Isaac
+                  baseline=None,  # V0 Modification: add boolean arg to allow sampling of completion comparisons - Isaac
                   attn_debug=False):
         """
         Translate content of `src_data_iter` (if not None) or `src_path`
@@ -233,7 +267,7 @@ class Translator(object):
             src_dir (str): source directory path
                 (used for Audio and Image datasets)
             batch_size (int): size of examples per mini-batch
-            vanilla (bool): whether to ignore ground truth and follow vanilla sampling to get a baseline for
+            baseline (bool): whether to ignore ground truth and follow baseline sampling to get a baseline for
                             completions sampled with ground truth hints. If True, will additionally skip writing
                             of ground truth completions to separate output file
             attn_debug (bool): enables the attention logging
@@ -247,12 +281,13 @@ class Translator(object):
         """
         assert src_data_iter is not None or src_path is not None
 
-        # V0 Modification: Check for target data - Isaac
+        # V0, V1 Modification: Check for target data - Isaac
 
         num_gt = self.num_gt
+        update = self.knowledge_sink and not baseline
 
         # If we are testing performance with hints make sure we have access to ground truth translations
-        if num_gt and num_gt > 0 and not vanilla:
+        if num_gt and num_gt > 0 and not baseline:
             assert tgt_data_iter is not None or tgt_path is not None
 
         # End Modification
@@ -300,8 +335,10 @@ class Translator(object):
 
             # V0 Modification: pass number of hints to translate_batch - Isaac
 
-            # set num_gt to 0 to specify translation without hint if vanilla is true
-            batch_data = self.translate_batch(batch, data, fast=self.fast, num_gt=0 if vanilla else num_gt)
+            # set num_gt to 0 to specify translation without hint if baseline is true
+            batch_data = self.translate_batch(batch, data, fast=self.fast,
+                                              num_gt=0 if baseline and not self.knowledge_sink else num_gt,
+                                              update=update)
 
             # End Modification
 
@@ -324,17 +361,23 @@ class Translator(object):
 
                 all_predictions += [n_best_preds]
 
-                # V0 Modification: write ground truth completions to the specified, separate out file
+                # V0, V1 Modification: write ground truth completions to the specified, separate out file
 
                 # only write to ground truth file when following hint sampling (avoid redundancy)
-                if num_gt > 0 and not vanilla:
+                if num_gt > 0 and not baseline:
                     self.out_gt_file.write(' '.join(trans.gold_sent[num_gt:]) + '\n')
                     self.out_gt_file.flush()
-                    self.out_hint_file.write('\n'.join(n_best_preds) + '\n')
-                    self.out_hint_file.flush()
+                    if update:
+                        file_stream = self.out_update_file
+                    else:
+                        file_stream = self.out_hint_file
                 else:
-                    self.out_file.write('\n'.join(n_best_preds) + '\n')
-                    self.out_file.flush()
+                    if update:
+                        file_stream = self.out_hint_file
+                    else:
+                        file_stream = self.out_file
+                file_stream.write('\n'.join(n_best_preds) + '\n')
+                file_stream.flush()
 
                 if self.verbose:
                     sent_number = next(counter)
@@ -384,8 +427,7 @@ class Translator(object):
 
                     # V0 Modification: provide ground truth completions path to scorer - Isaac
 
-                    msg = self._report_bleu(tgt_path if num_gt == 0 else self.out_gt_filename,
-                                            self.out_file if vanilla else self.out_hint_file)
+                    msg = self._report_bleu(tgt_path if num_gt == 0 else self.out_gt_filename, file_stream)
 
                     # End Modification
 
@@ -397,8 +439,7 @@ class Translator(object):
 
                     # V0 Modification: provide ground truth completions path to scorer - Isaac
 
-                    msg = self._report_rouge(tgt_path if num_gt == 0 else self.out_gt_filename,
-                                             self.out_file if vanilla else self.out_hint_file)
+                    msg = self._report_rouge(tgt_path if num_gt == 0 else self.out_gt_filename, file_stream)
 
                     # End Modification
 
@@ -413,7 +454,7 @@ class Translator(object):
                       codecs.open(self.dump_beam, 'w', 'utf-8'))
         return all_scores, all_predictions
 
-    def translate_batch(self, batch, data, fast=False, num_gt=0):  # V0 Modification: add args - Isaac
+    def translate_batch(self, batch, data, fast=False, num_gt=0, update=False):  # V0, V1 Modification: add args - Isaac
         """
         Translate a batch of sentences.
 
@@ -424,6 +465,7 @@ class Translator(object):
            data (:obj:`Dataset`): the dataset object
            fast (bool): enables fast beam search (may not support all features)
            num_gt (int): the number of ground truth hints to provide during translation
+           update (bool):  whether to perform an update on the cell state or not
 
         Todo:
            Shouldn't need the original dataset.
@@ -438,7 +480,8 @@ class Translator(object):
                     n_best=self.n_best,
                     return_attention=self.replace_unk)
             else:
-                return self._translate_batch(batch, data, num_gt=num_gt)  # V0 Modification: add args - Isaac
+                return self._translate_batch(batch, data, num_gt=num_gt, update=update)  # V0 Modification: add args
+                                                                                         # - Isaac
 
     # V1 Modification: fast_forward function to get logits deeper method returns to compute loss
 
@@ -650,7 +693,7 @@ class Translator(object):
 
         return results
 
-    def _translate_batch(self, batch, data, num_gt=0): # V0 Modification: add num_gt argument - Isaac
+    def _translate_batch(self, batch, data, num_gt=0, update=False):  # V0, V1 Modification: add num_gt argument - Isaac
         # (0) Prep each of the components of the search.
         # And helper method for reducing verbosity.
         beam_size = self.beam_size
@@ -692,7 +735,7 @@ class Translator(object):
 
         # Prepare ground truth and concatenate start symbol to beginning
         if num_gt > 0:
-            ground_truth = inputters.make_features(batch, 'tgt', 'text')[:num_gt, :, 0] # [num_gt X batch]
+            ground_truth = inputters.make_features(batch, 'tgt', 'text')[:num_gt, :, 0]  # [num_gt X batch]
             start_symbols = var(vocab.stoi[inputters.BOS_WORD]).repeat(1, batch_size)
             ground_truth = torch.cat([start_symbols, ground_truth], dim=0)
 
@@ -720,31 +763,50 @@ class Translator(object):
         # (2) Repeat src objects `beam_size` times.
         src_map = rvar(batch.src_map.data) \
             if data_type == 'text' and self.copy_attn else None
+
+        # V0 Modification: don't expand memory and dec_states by beam_size until done processing ground truth
+
+        """
         if isinstance(memory_bank, tuple):
             memory_bank = tuple(rvar(x.data) for x in memory_bank)
         else:
             memory_bank = rvar(memory_bank.data)
         memory_lengths = src_lengths.repeat(beam_size)
         dec_states.repeat_beam_size_times(beam_size)
+        """
+        memory_lengths = src_lengths
+
+        # End Modification
 
         # (3) run the decoder to generate sentences, using beam search.
         for i in range(self.max_length):
             if all((b.done() for b in beam)):
                 break
 
+            # V0 Modification: if done processing ground truth, expand decoder inputs along batch dim by beam size
+
+            if i == ground_truth.size(0):
+                if isinstance(memory_bank, tuple):
+                    memory_bank = tuple(rvar(x.data) for x in memory_bank)
+                else:
+                    memory_bank = rvar(memory_bank.data)
+                memory_lengths = memory_lengths.repeat(beam_size)
+                dec_states.repeat_beam_size_times(beam_size)
+
+            # End Modification
+
             # V0 Modification: set previous ground truth as input to each step - Isaac
 
             if num_gt > 0 and i < ground_truth.size(0):
                 # fill inp with ground truth words
-                inp = rvar(ground_truth[i].unsqueeze(1)).view(1, -1)
-
-            # End Modification
-
+                inp = ground_truth[i].unsqueeze(0)
             else:
                 # Construct batch x beam_size nxt words.
                 # Get all the pending current beam words and arrange for forward.
                 inp = var(torch.stack([b.get_current_state() for b in beam])
-                      .t().contiguous().view(1, -1))
+                          .t().contiguous().view(1, -1))
+
+            # End Modification
 
             # Turn any copied words to UNKs
             # 0 is unk
@@ -758,13 +820,12 @@ class Translator(object):
 
             # V1 Modification: save variables for call to fast_forward - Isaac
 
-            self.knowledge_sink.save_vars(dec_out=dec_out,
-                                          dec_states=dec_states,
-                                          attn=attn,
-                                          unbottle=unbottle,
-                                          data=data,
-                                          src_map=src_map,
-                                          batch=batch)
+            if update:
+                self.knowledge_sink.save_vars(self,
+                                              unbottle=unbottle,
+                                              data=data,
+                                              src_map=src_map,
+                                              batch=batch)
 
             # End Modification
 
@@ -773,34 +834,68 @@ class Translator(object):
                 inp, memory_bank, dec_states,
                 memory_lengths=memory_lengths,
                 step=i,
-                knowledge_sink=self.knowledge_sink)  # V1 Modification: pass knowledge sink to decoder
+                knowledge_sink=self.knowledge_sink if update and i + 1 == num_gt else None)  # V1 Modification:
+                                                                                             # pass knowledge sink to
+                                                                                             # decoder if we're doing
+                                                                                             # update this step
 
             dec_out = dec_out.squeeze(0)
+
+            # V0 Modification: if we are processing ground truth we need to expand attn dims for beam size
+
+            if i < ground_truth.size(0):
+                for k in attn:
+                    attn[k] = attn[k].repeat(1, beam_size, 1)
+
+            # End Modification
 
             # dec_out: beam x rnn_size
 
             # (b) Compute a vector of batch x beam word scores.
             if not self.copy_attn:
-                out = self.model.generator.forward(dec_out).data
-                out = unbottle(out)
+
+                # V0 Modification: only process output into word predictions if we are not feeding ground truth - Isaac
+
+                if i >= num_gt or (update and i + 1 == num_gt):
+                    out = self.model.generator.forward(dec_out).data
+                    # if last step of ground truth input, we need to expand dim
+                    if i == num_gt:
+                        out = out.repeat(beam_size, 1)
+                    out = unbottle(out)
+
+                # End Modification
+
                 # beam x tgt_vocab
                 beam_attn = unbottle(attn["std"])
             else:
-                out = self.model.generator.forward(dec_out,
-                                                   attn["copy"].squeeze(0),
-                                                   src_map)
-                # beam x (tgt_vocab + extra_vocab)
-                out = data.collapse_copy_scores(
-                    unbottle(out.data),
-                    batch, self.fields["tgt"].vocab, data.src_vocabs)
-                # beam x tgt_vocab
-                out = out.log()
+
+                # V0 Modification: only process output into word predictions if we are not feeding ground truth - Isaac
+
+                if i >= num_gt or (update and i + 1 == num_gt):
+                    out = self.model.generator.forward(dec_out,
+                                                       attn["copy"].squeeze(0),
+                                                       src_map)
+                    # if last step of ground truth input, we need to expand dim
+                    if i == num_gt:
+                        out = out.repeat(beam_size, 1)
+                    # beam x (tgt_vocab + extra_vocab)
+                    out = data.collapse_copy_scores(
+                        unbottle(out.data),
+                        batch, self.fields["tgt"].vocab, data.src_vocabs)
+                    # beam x tgt_vocab
+                    out = out.log()
+
+                # End Modification
+
                 beam_attn = unbottle(attn["copy"])
+
+            # End Modification
 
             # V1 Modification: conduct knowledge injection - Isaac
 
-            # TODO
-            # dec_out, dec_states, attn, out, beam_attn = self.knowledge_sink.
+            # currently only perform update during final step for which we have ground truth
+            if i + 1 == num_gt and update:
+                dec_out, dec_states, attn, out, beam_attn = self.knowledge_sink.correct(out, ground_truth[i+1])
 
             # End Modification
 
@@ -809,7 +904,7 @@ class Translator(object):
             # output is log-probs over vocab, so set ground truth index to 0, all others to be very negative
             def one_hot_log(idxs, cuda):
                 if cuda:
-                    return torch.cuda.FloatTensor([[0.0 if x == idx else float("-inf") for x in range(len(vocab))]]).repeat(beam_size, 1, 1)
+                    return torch.cuda.FloatTensor([[0.0 if x == idx else float("-inf") for x in range(len(vocab))] for idx in idxs]).repeat(beam_size, 1, 1)
                 return torch.FloatTensor([[0.0 if x == idx else float("-inf") for x in range(len(vocab))] for idx in idxs]).repeat(beam_size, 1, 1)
 
             if i < num_gt:
@@ -817,12 +912,21 @@ class Translator(object):
 
             # End Modification
 
+            # V0 Modification: if final step of ground input, expand outputs by beam size
+
+            if i == num_gt:
+                out = out.repeat(1, beam_size, 1)
+
             # (c) Advance each beam.
             for j, b in enumerate(beam):
                 b.advance(out[:, j],
                           beam_attn.data[:, j, :memory_lengths[j]],
-                          i < num_gt)  # V0 Modification: pass parameter specifying whether output is ground truth - Isaac
-                dec_states.beam_update(j, b.get_current_origin(), beam_size)
+                          i < num_gt)  # V0 Modification: pass parameter specifying whether output is ground truth
+                                       # - Isaac
+                # V0 Modification: only need to update decoder states if currently running beam search
+
+                if i >= ground_truth.size(0):
+                    dec_states.beam_update(j, b.get_current_origin(), beam_size)
 
         # (4) Extract sentences from beam.
         ret = self._from_beam(beam)

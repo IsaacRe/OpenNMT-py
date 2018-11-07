@@ -4,7 +4,8 @@ from onmt.utils.report_manager import ReportMgr, build_report_manager
 from onmt.utils.statistics import Statistics
 from onmt.utils.optimizers import build_optim, MultipleOptimizer, \
     Optimizer
+from . import knowledge_sink
 
-__all__ = ["aeq", "use_gpu", "ReportMgr",
+__all__ = ["knowledge_sink", "aeq", "use_gpu", "ReportMgr",
            "build_report_manager", "Statistics",
            "build_optim", "MultipleOptimizer", "Optimizer"]
