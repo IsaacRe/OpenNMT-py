@@ -33,7 +33,7 @@ class HijackableLSTM(nn.Module):
         input_feed = h_l_i
         if start_layer + 1 != self.num_layers:
             input_feed = self.dropout(input_feed)
-        for i, layer in enumerate(self.layers, start_layer+1):
+        for i, layer in enumerate(self.layers[start_layer+1:], start_layer+1):
             h_1_i, c_1_i = layer(input_feed, (h_0[i], c_0[i]))
             input_feed = h_1_i
             if i + 1 != self.num_layers:

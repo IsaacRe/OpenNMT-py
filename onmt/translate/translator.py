@@ -24,11 +24,20 @@ import onmt.translate.beam
 import onmt.inputters as inputters
 import onmt.opts as opts
 import onmt.decoders.ensemble
-from onmt.utils.knowledge_sink import StateUpdater  # V1 Modification import StateUpdater
+from onmt.utils.knowledge_sink import StateUpdater  # V1 Modification: import StateUpdater - Isaac
+import contextlib  # V1 Modification - Isaac
 
 
 # V1 Modification: pass knowledge_sink object to translator contruction
 def build_translator(opt, report_score=True, logger=None, out_file=None, knowledge_sink=None):
+
+    # V1 Modification: make use of gpu option (vanilla codebase doesn't)
+
+    if opt.gpu > -1:
+        torch.cuda.set_device(opt.gpu)
+
+    # End Modification
+
     if out_file is None:
         out_file = codecs.open(opt.output, 'w+', 'utf-8')
 
@@ -470,7 +479,8 @@ class Translator(object):
         Todo:
            Shouldn't need the original dataset.
         """
-        with torch.no_grad():
+        with torch.no_grad() if not update else contextlib.suppress():  # V1 Modification: if updating retain gradient
+                                                                        # functionality
             if fast:
                 return self._fast_translate_batch(
                     batch,
@@ -485,18 +495,23 @@ class Translator(object):
 
     # V1 Modification: fast_forward function to get logits deeper method returns to compute loss
 
-    def fast_forward(self, dec_out, dec_states, attn, unbottle, data, src_map, batch):
+    def fast_forward(self, dec_out, dec_states, attn, unbottle, data, src_map, batch, beam_size):
         dec_out = dec_out.squeeze(0)
 
         # dec_out: beam x rnn_size
 
         # (b) Compute a vector of batch x beam word scores.
         if not self.copy_attn:
+            # out will not be used since ground truth will be next step's input, so no need for further processing
+            """
             out = self.model.generator.forward(dec_out).data
             out = unbottle(out)
             # beam x tgt_vocab
-            beam_attn = unbottle(attn["std"])
+            """
+            beam_attn = unbottle(attn["std"].repeat(beam_size, 1, 1))
         else:
+            # out will not be used since ground truth will be next step's input, so no need for further processing
+            """
             out = self.model.generator.forward(dec_out,
                                                attn["copy"].squeeze(0),
                                                src_map)
@@ -506,7 +521,9 @@ class Translator(object):
                 batch, self.fields["tgt"].vocab, data.src_vocabs)
             # beam x tgt_vocab
             out = out.log()
-            beam_attn = unbottle(attn["copy"])
+            """
+            beam_attn = unbottle(attn["copy"].repeat(beam_size, 1, 1))
+        out = None
 
         return dec_out, dec_states, attn, out, beam_attn
 
@@ -719,8 +736,8 @@ class Translator(object):
                 for __ in range(batch_size)]
 
         # Help functions for working with beams and batches
-        def var(a):
-            return torch.tensor(a, requires_grad=False)
+        def var(a, grad=False):
+            return torch.tensor(a, requires_grad=grad)
 
         def rvar(a):
             return var(a.repeat(1, beam_size, 1))
@@ -733,11 +750,10 @@ class Translator(object):
 
         # V0 Modification - Isaac
 
-        # Prepare ground truth and concatenate start symbol to beginning
+        # Prepare ground truth
         if num_gt > 0:
-            ground_truth = inputters.make_features(batch, 'tgt', 'text')[:num_gt, :, 0]  # [num_gt X batch]
-            start_symbols = var(vocab.stoi[inputters.BOS_WORD]).repeat(1, batch_size)
-            ground_truth = torch.cat([start_symbols, ground_truth], dim=0)
+            # add 1 since first symbol is <start>
+            ground_truth = inputters.make_features(batch, 'tgt', 'text')[:num_gt+1, :, 0]  # [num_gt X batch]
 
         # End Modification
 
@@ -768,11 +784,13 @@ class Translator(object):
 
         """
         if isinstance(memory_bank, tuple):
-            memory_bank = tuple(rvar(x.data) for x in memory_bank)
+            memory_bank_d = tuple(rvar(x.data) for x in memory_bank)
         else:
-            memory_bank = rvar(memory_bank.data)
-        memory_lengths = src_lengths.repeat(beam_size)
-        dec_states.repeat_beam_size_times(beam_size)
+            memory_bank_d = rvar(memory_bank.data)
+        memory_lengths_d = src_lengths.repeat(beam_size)
+        dec_states_d = self.model.decoder.init_decoder_state(
+            src, memory_bank, enc_states)
+        dec_states_d.repeat_beam_size_times(beam_size)
         """
         memory_lengths = src_lengths
 
@@ -820,12 +838,13 @@ class Translator(object):
 
             # V1 Modification: save variables for call to fast_forward - Isaac
 
-            if update:
+            if i + 1 == num_gt and update:
                 self.knowledge_sink.save_vars(self,
                                               unbottle=unbottle,
                                               data=data,
                                               src_map=src_map,
-                                              batch=batch)
+                                              batch=batch,
+                                              beam_size=beam_size)
 
             # End Modification
 
@@ -854,14 +873,19 @@ class Translator(object):
             # (b) Compute a vector of batch x beam word scores.
             if not self.copy_attn:
 
-                # V0 Modification: only process output into word predictions if we are not feeding ground truth - Isaac
+                # V0 Modification: only process output into word predictions if we are not feeding ground truth
+                # or are updating - Isaac
 
                 if i >= num_gt or (update and i + 1 == num_gt):
-                    out = self.model.generator.forward(dec_out).data
+                    out = self.model.generator.forward(dec_out)
                     # if last step of ground truth input, we need to expand dim
                     if i == num_gt:
                         out = out.repeat(beam_size, 1)
-                    out = unbottle(out)
+                    # don't unbottle during update step
+                    if i >= num_gt:
+                        out = unbottle(out)
+                if i <= num_gt:
+                    attn["std"] = attn["std"].repeat(beam_size, 1, 1)
 
                 # End Modification
 
@@ -869,7 +893,8 @@ class Translator(object):
                 beam_attn = unbottle(attn["std"])
             else:
 
-                # V0 Modification: only process output into word predictions if we are not feeding ground truth - Isaac
+                # V0 Modification: only process output into word predictions if we are not feeding ground truth
+                # or are updating - Isaac
 
                 if i >= num_gt or (update and i + 1 == num_gt):
                     out = self.model.generator.forward(dec_out,
@@ -878,12 +903,16 @@ class Translator(object):
                     # if last step of ground truth input, we need to expand dim
                     if i == num_gt:
                         out = out.repeat(beam_size, 1)
-                    # beam x (tgt_vocab + extra_vocab)
-                    out = data.collapse_copy_scores(
-                        unbottle(out.data),
-                        batch, self.fields["tgt"].vocab, data.src_vocabs)
-                    # beam x tgt_vocab
-                    out = out.log()
+                        # beam x (tgt_vocab + extra_vocab)
+                    # don't unbottle during update step
+                    if i >= num_gt:
+                        out = data.collapse_copy_scores(
+                            unbottle(out),
+                            batch, self.fields["tgt"].vocab, data.src_vocabs)
+                        # beam x tgt_vocab
+                        out = out.log()
+                if i <= num_gt:
+                    attn["copy"] = attn["copy"].repeat(beam_size, 1, 1)
 
                 # End Modification
 
@@ -908,14 +937,11 @@ class Translator(object):
                 return torch.FloatTensor([[0.0 if x == idx else float("-inf") for x in range(len(vocab))] for idx in idxs]).repeat(beam_size, 1, 1)
 
             if i < num_gt:
-                out = one_hot_log(ground_truth[i+1], torch.cuda.is_available())
+                out = one_hot_log(ground_truth[i+1], self.cuda)
 
             # End Modification
 
             # V0 Modification: if final step of ground input, expand outputs by beam size
-
-            if i == num_gt:
-                out = out.repeat(1, beam_size, 1)
 
             # (c) Advance each beam.
             for j, b in enumerate(beam):

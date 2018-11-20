@@ -1,5 +1,6 @@
 from torch.nn import Parameter, CrossEntropyLoss
 import torch
+from copy import deepcopy
 
 
 class KnowledgeSink(object):
@@ -14,10 +15,21 @@ class KnowledgeSink(object):
         self.update_var = None
 
     """
+    Method to remove references to scope variables and update variables so that garbage collecter
+    may free up space
+    """
+    def _clear_references(self):
+        self._nodes = {}
+        self._modules = []
+        self.update_var = None
+        # clear all unreferenced memory space from the gpu
+        torch.cuda.empty_cache()
+
+    """
     Forward pass registers the activation and returns parameterized version
     """
     def register(self, x):
-        param = Parameter(x)
+        param = Parameter(x.detach().data.clone())
         self.update_var = param
         return param
 
@@ -27,17 +39,31 @@ class KnowledgeSink(object):
     """
     def correct(self, output, knowledge):
         assert self.update_var is not None
-        self._correct(output, knowledge)
+        output = self._correct(output, knowledge)
+
+        # when done with updates, remove all references to scope variables
+        self._clear_references()
+
+        return output
 
     """
     Save variables for use in fast_forward calls
     """
     def save_vars(self, module, **kwargs):
-        if module in self._nodes:
-            self._nodes[module].update(kwargs)
-        else:
-            self._nodes[module] = kwargs
+        if module not in self._nodes:
             self._modules += [module]
+            self._nodes[module] = {}
+        # try to perform deepcopy for all saved vars so that context is unaffected by remainder of forward pass
+        save_kwargs = {}
+        for k, v in kwargs.items():
+            if type(v) == torch.Tensor:
+                v = v.data
+            try:
+                v = deepcopy(v)
+            except:
+                pass
+            save_kwargs[k] = v
+        self._nodes[module].update(save_kwargs)
 
 
 class StateUpdater(KnowledgeSink):
@@ -65,17 +91,21 @@ class StateUpdater(KnowledgeSink):
         loss = self._make_loss(output, targets)
 
         # clear gradient for all states being updated
-        for c in self._nodes.keys():
-            if c.grad is not None:
-                c.grad.zero_()
+        if self.update_var.grad is not None:
+            self.update_var.grad.zero_()
 
         # necessary to specify gradient of output w.r.t. output when loss is not scalar
-        start_grads = torch.ones(loss.shape)
+        # TODO implement on gpu
+        #start_grads = torch.ones(loss.shape)  # .cuda(torch.cuda.current_device())
         # retain_graph only necessary when we begin to apply multiple updates
-        loss.backward(start_grads)
+        # TODO implement for batch training
+        loss = torch.sum(loss)
+        loss.backward()
+
+        assert self.update_var.grad is not None
 
         # Perform update for registered cell_state and follow fast_forward methods to compute new output
-        self.update_var -= self.update_var.grad.data * self._step
+        self.update_var.data -= self.update_var.grad * self._step
         new_output = [self.update_var]
         for module in self._modules[::-1]:
             kwargs = self._nodes[module]

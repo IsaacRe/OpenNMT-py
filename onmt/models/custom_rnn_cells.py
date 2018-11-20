@@ -4,7 +4,6 @@ Implementations of custom RNN Cells necessary for knowledge injection.
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import math
 
 
@@ -20,8 +19,10 @@ class HijackableLSTMCell(nn.Module):
         self.state_size = state_size
         # Weights have shape [number of gates * state size X input size + state size]
         # since gate output is computed from input
-        self._weight = nn.Parameter(torch.empty(4 * state_size, input_size + state_size))
-        self._bias = nn.Parameter(torch.empty(4 * state_size))
+        self.weight_ih = nn.Parameter(torch.empty(4 * state_size, input_size))
+        self.weight_hh = nn.Parameter(torch.empty(4 * state_size, state_size))
+        self.bias_ih = nn.Parameter(torch.empty(4 * state_size))
+        self.bias_hh = nn.Parameter(torch.empty(4 * state_size))
         self._init_weights()
 
     def _init_weights(self):
@@ -35,20 +36,22 @@ class HijackableLSTMCell(nn.Module):
             c_t+1
             output gate (for computing h_t+1)
     """
-    def compute_c(self, x, states):
+    def compute_c(self, x, states, order=['i', 'f', 'g', 'o']):
         h, c = states
 
         # concatenate input and previous hidden state
         x = torch.cat([h, x], dim=1)  # [state size + input size X batch size]
+        w = torch.cat([self.weight_hh, self.weight_ih], dim=1)
+        b = self.bias_hh + self.bias_ih
 
         # compute forget, input and output gates and cell state addition
-        gates = F.linear(x, self._weight, bias=self._bias).chunk(4, dim=1)
-        forget_gate = F.sigmoid(gates[0])
-        input_gate = F.sigmoid(gates[1])
-        state_addition = F.tanh(gates[2])
-        output_gate = F.sigmoid(gates[3])
+        gates = (torch.mm(x, w.transpose(1, 0)) + b).chunk(4, dim=1)
+        input_gate = torch.sigmoid(gates[order.index('i')])
+        forget_gate = torch.sigmoid(gates[order.index('f')])
+        state_addition = torch.tanh(gates[order.index('g')])
+        output_gate = torch.sigmoid(gates[order.index('o')])
 
-        c_new = c * forget_gate + state_addition + input_gate
+        c_new = c * forget_gate + state_addition * input_gate
 
         return c_new, output_gate
 
@@ -58,14 +61,14 @@ class HijackableLSTMCell(nn.Module):
             h_t+1
     """
     def compute_h(self, c, output_gate):
-        return F.tanh(c) * output_gate
+        return torch.tanh(c) * output_gate
 
     """
     Compute cell's entire forward pass
     """
-    def forward(self, input, states):
+    def forward(self, input, states, order=['i', 'f', 'g', 'o']):
         # get new cell state and output gate
-        c, output_gate = self.compute_c(input, states)
+        c, output_gate = self.compute_c(input, states, order)
 
         # get new hidden state
         h = self.compute_h(c, output_gate)

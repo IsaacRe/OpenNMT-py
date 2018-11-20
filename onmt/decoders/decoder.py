@@ -64,7 +64,8 @@ class RNNDecoderBase(nn.Module):
                  hidden_size, attn_type="general", attn_func="softmax",
                  coverage_attn=False, context_gate=None,
                  copy_attn=False, dropout=0.0, embeddings=None,
-                 reuse_copy_attn=False):
+                 reuse_copy_attn=False, hijack=False):  # V1 Modification: pass arg to specify use of implementation
+                                                        # with hijacking
         super(RNNDecoderBase, self).__init__()
 
         # Basic attributes.
@@ -80,7 +81,8 @@ class RNNDecoderBase(nn.Module):
                                    input_size=self._input_size,
                                    hidden_size=hidden_size,
                                    num_layers=num_layers,
-                                   dropout=dropout)
+                                   dropout=dropout,
+                                   hijack=hijack)  # pass arg to specify hijacking
 
         # Set up the context gate.
         self.context_gate = None
@@ -472,11 +474,14 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         return hidden, decoder_outputs, attns
 
     def _build_rnn(self, rnn_type, input_size,
-                   hidden_size, num_layers, dropout):
+                   hidden_size, num_layers, dropout, hijack=False):  # V1 Modification: pass arg to specify hijacking
         assert not rnn_type == "SRU", "SRU doesn't support input feed! " \
             "Please set -input_feed 0!"
         if rnn_type == "LSTM":
-            stacked_cell = onmt.models.stacked_rnn.HijackableLSTM  # V1 Modification: use lstm cell with hijacking
+            if hijack:
+                stacked_cell = onmt.models.stacked_rnn.HijackableLSTM  # V1 Modification: use lstm cell with hijacking
+            else:
+                stacked_cell = onmt.models.stacked_rnn.StackedLSTM
         else:
             stacked_cell = onmt.models.stacked_rnn.StackedGRU
         return stacked_cell(num_layers, input_size,

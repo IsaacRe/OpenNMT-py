@@ -84,7 +84,7 @@ def build_encoder(opt, embeddings):
                           opt.bridge)
 
 
-def build_decoder(opt, embeddings):
+def build_decoder(opt, embeddings, hijack=False):  # V1 Modification: add arg to specify use of rnn with hijacking
     """
     Various decoder dispatcher function.
     Args:
@@ -112,7 +112,8 @@ def build_decoder(opt, embeddings):
                                    opt.copy_attn,
                                    opt.dropout,
                                    embeddings,
-                                   opt.reuse_copy_attn)
+                                   opt.reuse_copy_attn,
+                                   hijack=hijack)  # V1 Modification: pass arg to specify use of hijackable rnn - Isaac
     else:
         return StdRNNDecoder(opt.rnn_type, opt.brnn,
                              opt.dec_layers, opt.dec_rnn_size,
@@ -146,8 +147,18 @@ def load_test_model(opt, dummy_opt, model_path=None):
         if arg not in model_opt:
             model_opt.__dict__[arg] = dummy_opt[arg]
     model = build_base_model(model_opt, fields, use_gpu(opt), checkpoint)
-    model.eval()
-    model.generator.eval()
+
+    # V1 Modification: only put encoder in eval mode if we are updating
+
+    if opt.update_size > 0:
+        #model.encoder.eval()
+        pass
+    else:
+        model.eval()
+        model.generator.eval()
+
+    # End Modification
+
     return fields, model, model_opt
 
 
@@ -209,7 +220,8 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None):
 
         tgt_embeddings.word_lut.weight = src_embeddings.word_lut.weight
 
-    decoder = build_decoder(model_opt, tgt_embeddings)
+    # TODO benchmark test rnn speed of hijacking implementation against pytorch's
+    decoder = build_decoder(model_opt, tgt_embeddings, hijack=True)
 
     # Build NMTModel(= encoder + decoder).
     device = torch.device("cuda" if gpu else "cpu")
